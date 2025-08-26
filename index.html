@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Snakes & Ladders - Indian Style</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Teko:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Teko', sans-serif;
+            background-color: #1a202c;
+        }
+        #game-canvas {
+            display: block;
+        }
+        .hud-element {
+            text-shadow: 0 0 5px black, 0 0 10px black;
+        }
+        .modal-bg {
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        .modal-content {
+            background: linear-gradient(145deg, #4a5568, #2d3748);
+            border: 2px solid #f6ad55;
+        }
+        .btn-3d {
+            background: linear-gradient(145deg, #f6ad55, #dd6b20);
+            border-bottom: 4px solid #c05621;
+            transition: all 0.1s ease-in-out;
+        }
+        .btn-3d:active {
+            transform: translateY(2px);
+            border-bottom-width: 2px;
+        }
+    </style>
+</head>
+<body class="text-white">
+
+    <!-- Game Setup Modal -->
+    <div id="setup-modal" class="modal-bg fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="modal-content w-full max-w-md p-8 rounded-2xl shadow-2xl text-center">
+            <h1 class="text-5xl font-bold text-orange-300 mb-6">3D Snakes & Ladders</h1>
+            <div class="space-y-4">
+                <input type="text" id="player1-name" placeholder="Player 1 Name" class="w-full p-3 bg-gray-700 border-2 border-gray-600 rounded-lg text-xl focus:outline-none focus:border-orange-400">
+                <input type="text" id="player2-name" placeholder="Player 2 Name" class="w-full p-3 bg-gray-700 border-2 border-gray-600 rounded-lg text-xl focus:outline-none focus:border-orange-400">
+            </div>
+            <div class="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <button id="start-1v1" class="btn-3d text-2xl font-bold py-3 rounded-lg w-full">1 vs 1</button>
+                <button id="start-1vcpu" class="btn-3d text-2xl font-bold py-3 rounded-lg w-full">1 vs Computer</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- In-Game HUD -->
+    <div id="game-hud" class="hidden absolute inset-0 pointer-events-none">
+        <!-- Top Info -->
+        <div class="absolute top-0 left-0 right-0 p-4 flex justify-between items-center bg-gradient-to-b from-black/50 to-transparent">
+            <div id="player-turn" class="hud-element text-4xl font-bold"></div>
+            <div id="dice-result-display" class="hud-element text-5xl font-bold"></div>
+        </div>
+        
+        <!-- Bottom Controls -->
+        <div class="absolute bottom-0 left-0 right-0 p-6 flex justify-center">
+            <button id="roll-dice-btn" class="btn-3d text-3xl font-bold py-4 px-12 rounded-lg pointer-events-auto">Roll Dice</button>
+        </div>
+
+        <!-- Message Overlay -->
+        <div id="message-overlay" class="absolute inset-0 flex items-center justify-center text-6xl font-bold hud-element opacity-0 transition-opacity duration-500"></div>
+    </div>
+
+    <!-- Win Screen -->
+    <div id="win-screen" class="hidden modal-bg fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="modal-content w-full max-w-md p-8 rounded-2xl shadow-2xl text-center">
+            <h2 id="winner-name" class="text-6xl font-bold text-yellow-400 mb-6"></h2>
+            <button id="play-again-btn" class="btn-3d text-2xl font-bold py-3 px-8 rounded-lg">Play Again</button>
+        </div>
+    </div>
+
+
+    <canvas id="game-canvas"></canvas>
+
+    <script>
+        // --- Basic Setup ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('game-canvas'), antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.minDistance = 15;
+        controls.maxDistance = 50;
+        controls.maxPolarAngle = Math.PI / 2.2;
+
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(-10, 20, 10);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.camera.top = 15;
+        directionalLight.shadow.camera.bottom = -15;
+        directionalLight.shadow.camera.left = -15;
+        directionalLight.shadow.camera.right = 15;
+        scene.add(directionalLight);
+
+        // --- Game State ---
+        let gameMode = '1v1';
+        let playerNames = ['Player 1', 'Player 2'];
+        let playerPositions = [0, 0]; // 0 means off-board
+        let currentPlayerIndex = 0;
+        let isMoving = false;
+        let isGameOver = false;
+
+        const boardSize = 10;
+        const tileSize = 2;
+        const boardTiles = [];
+        const playerPieces = [];
+        let dice;
+
+        // --- Game Elements Definition ---
+        const snakes = { 17: 7, 54: 34, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 99: 78 };
+        const ladders = { 4: 14, 9: 31, 20: 38, 28: 84, 40: 59, 51: 67, 63: 81, 71: 91 };
+
+        // --- UI Elements ---
+        const setupModal = document.getElementById('setup-modal');
+        const gameHud = document.getElementById('game-hud');
+        const playerTurnDisplay = document.getElementById('player-turn');
+        const diceResultDisplay = document.getElementById('dice-result-display');
+        const rollDiceBtn = document.getElementById('roll-dice-btn');
+        const messageOverlay = document.getElementById('message-overlay');
+        const winScreen = document.getElementById('win-screen');
+        const winnerNameDisplay = document.getElementById('winner-name');
+
+        // --- Game Initialization ---
+        function init() {
+            createBoard();
+            createSnakesAndLadders();
+            createPlayers();
+            createDice();
+            
+            camera.position.set(0, 25, 20);
+            camera.lookAt(0, 0, 0);
+            
+            animate();
+        }
+        
+        // --- Board Creation ---
+        function createBoard() {
+            const boardGroup = new THREE.Group();
+            const colors = [new THREE.Color(0xdd6b20), new THREE.Color(0xf6ad55)]; // Orange tones
+            
+            for (let i = 0; i < boardSize * boardSize; i++) {
+                const geometry = new THREE.BoxGeometry(tileSize, 0.2, tileSize);
+                const material = new THREE.MeshStandardMaterial({ color: colors[(i + Math.floor(i/boardSize)) % 2] });
+                const tile = new THREE.Mesh(geometry, material);
+                
+                const pos = getPositionForTile(i + 1);
+                tile.position.set(pos.x, 0, pos.z);
+                tile.receiveShadow = true;
+                
+                // Add number texture
+                const numberTexture = createNumberTexture(i + 1);
+                const numberMaterial = new THREE.MeshBasicMaterial({ map: numberTexture, transparent: true });
+                const numberPlane = new THREE.Mesh(new THREE.PlaneGeometry(tileSize * 0.6, tileSize * 0.6), numberMaterial);
+                numberPlane.position.y = 0.11;
+                numberPlane.rotation.x = -Math.PI / 2;
+                tile.add(numberPlane);
+
+                boardGroup.add(tile);
+                boardTiles.push(tile);
+            }
+            scene.add(boardGroup);
+        }
+
+        function createNumberTexture(number) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const context = canvas.getContext('2d');
+            context.fillStyle = 'rgba(0,0,0,0.7)';
+            context.font = 'bold 32px Teko';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(number.toString(), 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+        
+        // --- Snakes and Ladders Models ---
+        function createSnakesAndLadders() {
+            // Ladders
+            Object.entries(ladders).forEach(([start, end]) => {
+                const startPos = getPositionForTile(start);
+                const endPos = getPositionForTile(end);
+                const ladderGroup = createLadderModel(startPos, endPos);
+                scene.add(ladderGroup);
+            });
+
+            // Snakes
+            Object.entries(snakes).forEach(([start, end]) => {
+                const startPos = getPositionForTile(start);
+                const endPos = getPositionForTile(end);
+                const snakeMesh = createSnakeModel(startPos, endPos);
+                scene.add(snakeMesh);
+            });
+        }
+
+        function createLadderModel(startPos, endPos) {
+            const group = new THREE.Group();
+            const distance = startPos.distanceTo(endPos);
+            const numRungs = Math.floor(distance / (tileSize * 0.5));
+            const railMaterial = new THREE.MeshStandardMaterial({ color: 0x8D6E63, roughness: 0.8 }); // Wood color
+            const rungMaterial = new THREE.MeshStandardMaterial({ color: 0xA1887F });
+
+            const railGeom = new THREE.CylinderGeometry(0.1, 0.1, distance, 8);
+            
+            const rail1 = new THREE.Mesh(railGeom, railMaterial);
+            const rail2 = new THREE.Mesh(railGeom, railMaterial);
+            
+            rail1.position.x = -0.5;
+            rail2.position.x = 0.5;
+
+            for (let i = 0; i <= numRungs; i++) {
+                const rung = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.1, 0.1), rungMaterial);
+                rung.position.y = -distance / 2 + i * (distance / numRungs);
+                group.add(rung);
+            }
+            
+            group.add(rail1, rail2);
+            group.position.copy(startPos).lerp(endPos, 0.5);
+            group.lookAt(endPos);
+            group.position.y += 0.1;
+            
+            return group;
+        }
+
+        function createSnakeModel(startPos, endPos) {
+            const midPoint1 = new THREE.Vector3().lerpVectors(startPos, endPos, 0.3).add(new THREE.Vector3(0, 3, 2));
+            const midPoint2 = new THREE.Vector3().lerpVectors(startPos, endPos, 0.7).add(new THREE.Vector3(0, 3, -2));
+            const curve = new THREE.CatmullRomCurve3([startPos, midPoint1, midPoint2, endPos]);
+
+            const geometry = new THREE.TubeGeometry(curve, 20, 0.3, 8, false);
+            const material = new THREE.MeshStandardMaterial({ color: 0x4CAF50, roughness: 0.3 }); // Green snake
+            const snake = new THREE.Mesh(geometry, material);
+            snake.position.y = 0.2;
+            return snake;
+        }
+
+        // --- Player and Dice Creation ---
+        function createPlayers() {
+            const playerColors = [0x3182ce, 0xc53030]; // Blue, Red
+            const playerGeometries = [
+                new THREE.ConeGeometry(0.5, 1.5, 8), // Pawn shape
+                new THREE.ConeGeometry(0.5, 1.5, 8)
+            ];
+
+            for (let i = 0; i < 2; i++) {
+                const material = new THREE.MeshStandardMaterial({ color: playerColors[i] });
+                const piece = new THREE.Mesh(playerGeometries[i], material);
+                piece.castShadow = true;
+                piece.position.set(-boardSize - 2 + (i * 2), 0.75, boardSize); // Start off-board
+                scene.add(piece);
+                playerPieces.push(piece);
+            }
+        }
+
+        function createDice() {
+            const diceSize = 1.5;
+            const geometry = new THREE.BoxGeometry(diceSize, diceSize, diceSize);
+            const textures = [
+                createNumberTexture(1), createNumberTexture(6),
+                createNumberTexture(2), createNumberTexture(5),
+                createNumberTexture(3), createNumberTexture(4),
+            ];
+            const materials = textures.map(tex => new THREE.MeshBasicMaterial({ map: tex }));
+            
+            dice = new THREE.Mesh(geometry, materials);
+            dice.position.set(0, 5, boardSize + 2);
+            scene.add(dice);
+        }
+
+        // --- Game Logic ---
+        function startGame(mode) {
+            gameMode = mode;
+            playerNames[0] = document.getElementById('player1-name').value || 'Player 1';
+            if (mode === '1v1') {
+                playerNames[1] = document.getElementById('player2-name').value || 'Player 2';
+            } else {
+                playerNames[1] = 'Computer';
+                document.getElementById('player2-name').value = 'Computer';
+            }
+            
+            setupModal.classList.add('hidden');
+            gameHud.classList.remove('hidden');
+            updateUI();
+        }
+
+        function updateUI() {
+            if (isGameOver) return;
+            playerTurnDisplay.textContent = `${playerNames[currentPlayerIndex]}'s Turn`;
+            rollDiceBtn.disabled = isMoving;
+            rollDiceBtn.style.opacity = isMoving ? '0.5' : '1';
+        }
+
+        function rollDice() {
+            if (isMoving) return;
+            isMoving = true;
+            updateUI();
+            diceResultDisplay.textContent = '';
+            
+            let rollValue = 0;
+            const rollAnimation = setInterval(() => {
+                rollValue = Math.floor(Math.random() * 6) + 1;
+                dice.rotation.x = Math.random() * Math.PI * 2;
+                dice.rotation.y = Math.random() * Math.PI * 2;
+                dice.rotation.z = Math.random() * Math.PI * 2;
+                diceResultDisplay.textContent = rollValue;
+            }, 100);
+
+            setTimeout(() => {
+                clearInterval(rollAnimation);
+                const finalRoll = Math.floor(Math.random() * 6) + 1;
+                diceResultDisplay.textContent = `⚁ ${finalRoll}`;
+                setDiceFace(finalRoll);
+                movePlayer(finalRoll);
+            }, 1500);
+        }
+
+        function setDiceFace(value) {
+            const quat = new THREE.Quaternion();
+            switch (value) {
+                case 1: quat.setFromEuler(new THREE.Euler(0, 0, 0)); break;
+                case 2: quat.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0)); break;
+                case 3: quat.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); break;
+                case 4: quat.setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0)); break;
+                case 5: quat.setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)); break;
+                case 6: quat.setFromEuler(new THREE.Euler(Math.PI, 0, 0)); break;
+            }
+            dice.setRotationFromQuaternion(quat);
+        }
+
+        function movePlayer(steps) {
+            let currentPos = playerPositions[currentPlayerIndex];
+            const targetPos = currentPos + steps;
+
+            if (targetPos > 100) {
+                showMessage("Too high!", () => switchTurn());
+                return;
+            }
+
+            animateMove(currentPos, targetPos, () => {
+                playerPositions[currentPlayerIndex] = targetPos;
+                if (targetPos === 100) {
+                    endGame();
+                    return;
+                }
+                checkSnakesAndLadders();
+            });
+        }
+
+        function checkSnakesAndLadders() {
+            const currentTile = playerPositions[currentPlayerIndex];
+            if (ladders[currentTile]) {
+                const endTile = ladders[currentTile];
+                showMessage("Ladder!", () => {
+                    animateSpecialMove(currentTile, endTile, () => {
+                        playerPositions[currentPlayerIndex] = endTile;
+                        switchTurn();
+                    });
+                });
+            } else if (snakes[currentTile]) {
+                const endTile = snakes[currentTile];
+                showMessage("Snake!", () => {
+                    animateSpecialMove(currentTile, endTile, () => {
+                        playerPositions[currentPlayerIndex] = endTile;
+                        switchTurn();
+                    });
+                });
+            } else {
+                switchTurn();
+            }
+        }
+
+        function switchTurn() {
+            currentPlayerIndex = (currentPlayerIndex + 1) % 2;
+            isMoving = false;
+            updateUI();
+
+            if (gameMode === '1vcpu' && currentPlayerIndex === 1 && !isGameOver) {
+                setTimeout(() => rollDice(), 2000);
+            }
+        }
+        
+        function endGame() {
+            isGameOver = true;
+            gameHud.classList.add('hidden');
+            winScreen.classList.remove('hidden');
+            winnerNameDisplay.textContent = `${playerNames[currentPlayerIndex]} Wins!`;
+        }
+
+        // --- Animations ---
+        function animateMove(startTile, endTile, onComplete) {
+            const piece = playerPieces[currentPlayerIndex];
+            let current = startTile;
+
+            function step() {
+                if (current < endTile) {
+                    current++;
+                    const targetPos = getPositionForTile(current);
+                    targetPos.y = piece.position.y;
+                    
+                    const start = piece.position.clone();
+                    const hopHeight = 0.5;
+                    let t = 0;
+                    const duration = 150; // ms per step
+
+                    function hop() {
+                        t += 16.67 / duration;
+                        if (t > 1) t = 1;
+                        
+                        piece.position.lerpVectors(start, targetPos, t);
+                        piece.position.y = start.y + Math.sin(t * Math.PI) * hopHeight;
+
+                        if (t < 1) {
+                            requestAnimationFrame(hop);
+                        } else {
+                            piece.position.copy(targetPos);
+                            step();
+                        }
+                    }
+                    hop();
+                } else {
+                    onComplete();
+                }
+            }
+            step();
+        }
+        
+        function animateSpecialMove(startTile, endTile, onComplete) {
+            const piece = playerPieces[currentPlayerIndex];
+            const startPos = getPositionForTile(startTile);
+            startPos.y = piece.position.y;
+            const endPos = getPositionForTile(endTile);
+            endPos.y = piece.position.y;
+            
+            let t = 0;
+            const duration = 1000;
+            
+            function move() {
+                t += 16.67 / duration;
+                if (t > 1) t = 1;
+                
+                piece.position.lerpVectors(startPos, endPos, t);
+                
+                if (t < 1) {
+                    requestAnimationFrame(move);
+                } else {
+                    onComplete();
+                }
+            }
+            move();
+        }
+
+        function showMessage(text, onComplete) {
+            messageOverlay.textContent = text;
+            messageOverlay.style.opacity = '1';
+            setTimeout(() => {
+                messageOverlay.style.opacity = '0';
+                if(onComplete) onComplete();
+            }, 1500);
+        }
+
+        // --- Utility ---
+        function getPositionForTile(tileNumber) {
+            if (tileNumber === 0) return new THREE.Vector3(-boardSize - 2 + (currentPlayerIndex * 2), 0.75, boardSize);
+
+            const zeroBased = tileNumber - 1;
+            const row = Math.floor(zeroBased / boardSize);
+            let col = zeroBased % boardSize;
+            
+            if (row % 2 !== 0) { // Reverse direction for odd rows
+                col = boardSize - 1 - col;
+            }
+
+            const x = col * tileSize - (boardSize * tileSize) / 2 + tileSize / 2;
+            const z = row * tileSize - (boardSize * tileSize) / 2 + tileSize / 2;
+            
+            return new THREE.Vector3(x, 0.1, z);
+        }
+
+        // --- Main Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // --- Event Listeners ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        document.getElementById('start-1v1').addEventListener('click', () => startGame('1v1'));
+        document.getElementById('start-1vcpu').addEventListener('click', () => startGame('1vcpu'));
+        rollDiceBtn.addEventListener('click', rollDice);
+        document.getElementById('play-again-btn').addEventListener('click', () => window.location.reload());
+
+        // --- Start ---
+        init();
+
+    </script>
+</body>
+</html>
